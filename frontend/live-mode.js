@@ -42,6 +42,7 @@
   let authMode = 'login';
   let quickBooksData = null;
   let quickBooksItems = [];
+  let competitorHistory = new Map();
   let providerHealth = null;
   let lastClientRefreshAt = 0;
   let clientRefreshInProgress = false;
@@ -62,6 +63,7 @@
 
   function setEmptyWorkspace() {
     competitors = [];
+    competitorHistory.clear();
     invoices = [];
     alerts = [];
     savings = [];
@@ -288,14 +290,9 @@
   }
 
   async function refreshBackendRecords() {
-    const [, health] = await Promise.all([
-      backendLoadLiveData(),
-      pwApi('/api/health'),
-    ]);
+    await pwLoadLiveData();
     negotiations = loadNegotiations();
-    providerHealth = health;
     lastClientRefreshAt = Date.now();
-    renderAll();
   }
 
   pwLoadLiveData = async function () {
@@ -310,6 +307,15 @@
     providerHealth = health;
     quickBooksData = status.connected ? await pwApi('/api/integrations/quickbooks/dashboard') : null;
     mapQuickBooksData();
+    const historyResults = await Promise.all(competitors.map(async item => {
+      try {
+        return [item.id, { rows: await pwApi(`/api/competitors/${item.id}/history`), error: null }];
+      } catch (error) {
+        console.warn(`Could not load price history for competitor ${item.id}.`, error);
+        return [item.id, { rows: [], error: error.message }];
+      }
+    }));
+    competitorHistory = new Map(historyResults);
     renderAll();
   };
 
@@ -321,53 +327,181 @@
     PRICE_LEVEL_VERY_EXPENSIVE: 'Very expensive',
   })[level] || '';
 
+  const watchCurrencyMatches = item => (item.currency || '').toUpperCase() === (item.lastPriceCurrency || item.currency || '').toUpperCase();
+  const watchHasPrice = item => item.lastPrice !== null && item.lastPrice !== undefined && Number.isFinite(Number(item.lastPrice));
+  const watchPosition = item => {
+    if (!watchHasPrice(item)) return 'unobserved';
+    if (!watchCurrencyMatches(item) || !(item.mine > 0)) return 'uncomparable';
+    const difference = (Number(item.lastPrice) - item.mine) / item.mine;
+    return difference < -0.03 ? 'lower' : difference > 0.03 ? 'higher' : 'same';
+  };
+  const watchPositionLabel = position => ({
+    lower: 'Competitor lower',
+    higher: 'You are lower',
+    same: 'Similar',
+    unobserved: 'Not scanned',
+    uncomparable: 'Not comparable',
+  })[position] || 'Unknown';
+  const watchMoney = (value, currency) => {
+    if (value === null || value === undefined || !Number.isFinite(Number(value))) return '—';
+    try {
+      return new Intl.NumberFormat(selectedLocale, {
+        style: 'currency',
+        currency: /^[A-Z]{3}$/.test(currency || '') ? currency : 'USD',
+        maximumFractionDigits: 2,
+      }).format(Number(value));
+    } catch {
+      return `${Number(value).toFixed(2)} ${currency || ''}`.trim();
+    }
+  };
+  const safePublicUrl = value => {
+    try {
+      const url = new URL(value);
+      return ['https:', 'http:'].includes(url.protocol) ? url.href : null;
+    } catch {
+      return null;
+    }
+  };
+  const watchGap = item => (Number(item.lastPrice) - item.mine) / item.mine;
+
   function renderLiveCompetitors() {
     const body = $('#competitorRows');
     if (!body) return;
+    const scanAvailable = PW_LIVE && providerHealth?.openai_configured !== false;
     const query = ($('#competitorSearch')?.value || '').trim().toLowerCase();
     const filter = $('#competitorFilter')?.value || 'all';
     const filtered = competitors.filter(item => {
       const matchesQuery = `${item.item} ${item.competitor} ${item.category}`.toLowerCase().includes(query);
-      const position = item.lastPrice === null || item.lastPrice === undefined
-        ? 'unobserved'
-        : competitorPosition(item);
+      const position = watchPosition(item);
       return matchesQuery && (filter === 'all' || filter === position);
     });
     body.innerHTML = filtered.map(item => {
-      const level = mapsPriceLevelLabel(item.googlePriceLevel);
-      const priceNote = level
-        ? `<small>Google Maps business price level: ${esc(level)} (estimate)</small>`
-        : '';
-      let mapsUri = null;
-      try {
-        const parsedMapsUri = new URL(item.googleMapsUri);
-        if (parsedMapsUri.protocol === 'https:') mapsUri = parsedMapsUri.href;
-      } catch {
-        mapsUri = null;
+      const priceCurrency = item.lastPriceCurrency || item.currency;
+      const hasPrice = watchHasPrice(item);
+      const comparable = watchPosition(item) !== 'uncomparable' && hasPrice;
+      const difference = comparable ? Number(item.lastPrice) - item.mine : null;
+      const gapPercent = comparable ? watchGap(item) * 100 : null;
+      const history = competitorHistory.get(item.id);
+      const pastObservation = history?.rows?.[1];
+      let behavior = history?.error
+        ? 'History unavailable'
+        : history?.rows?.length
+          ? `${history.rows.length} saved observation${history.rows.length === 1 ? '' : 's'}`
+          : 'No scan history';
+      if (pastObservation && hasPrice) {
+        if ((pastObservation.currency || priceCurrency).toUpperCase() !== priceCurrency.toUpperCase()) {
+          behavior += ' · currency changed';
+        } else {
+          const movement = Number(item.lastPrice) - Number(pastObservation.price);
+          behavior += movement === 0
+            ? ' · unchanged vs previous'
+            : ` · ${movement < 0 ? '↓' : '↑'} ${watchMoney(Math.abs(movement), priceCurrency)} vs previous`;
+        }
       }
-      const mapsLink = mapsUri
-        ? `<a href="${esc(mapsUri)}" target="_blank" rel="noopener noreferrer">Maps</a>`
-        : '';
-      const competitorPrice = item.lastPrice === null || item.lastPrice === undefined
-        ? '—'
-        : formatMoney(item.lastPrice, item.currency);
-      const difference = item.lastPrice === null || item.lastPrice === undefined
-        ? '—'
-        : `${item.lastPrice < item.mine ? '−' : item.lastPrice > item.mine ? '+' : ''}${formatMoney(Math.abs(item.lastPrice - item.mine), item.currency)}`;
+      const checkedAt = item.lastCheckedAt ? Date.parse(item.lastCheckedAt) : NaN;
+      const ageHours = Number.isFinite(checkedAt) ? Math.max(0, (Date.now() - checkedAt) / 3600000) : Infinity;
+      const freshness = !hasPrice
+        ? 'Awaiting first price'
+        : !item.lastEvidence
+          ? 'No saved evidence'
+          : ageHours < 2
+            ? 'Recent · verify'
+            : ageHours < 24
+              ? 'Check freshness'
+              : 'Stale · rescan';
+      const freshnessClass = !hasPrice || !item.lastEvidence || ageHours >= 24
+        ? 'danger'
+        : ageHours < 2 ? '' : 'warn';
+      const sourceUrl = safePublicUrl(item.url);
+      const position = watchPosition(item);
+      const positionClass = position === 'lower' ? 'warn' : position === 'uncomparable' || position === 'unobserved' ? 'blue' : '';
+      const evidence = item.lastEvidence
+        ? `<small title="${esc(item.lastEvidence)}">${esc(item.lastEvidence.length > 78 ? `${item.lastEvidence.slice(0, 75)}…` : item.lastEvidence)}</small>`
+        : '<small>No price evidence saved</small>';
       return `
         <tr>
-          <td><b>${esc(item.item)}</b></td>
-          <td><b>${esc(item.competitor)}</b><br>${priceNote}${mapsLink}</td>
-          <td>${formatMoney(item.mine, item.currency)}</td>
-          <td>${competitorPrice}</td>
-          <td>${difference}</td>
-          <td>${esc(item.checked || 'Not scanned')}</td>
-          <td><button class="btn small" type="button" data-scan-competitor="${item.id}">Scan now</button></td>
+          <td><b>${esc(item.item)}</b><small>${esc(item.competitor)}</small></td>
+          <td>${watchMoney(item.mine, item.currency)}<small>${esc(item.currency)}</small></td>
+          <td>${hasPrice ? watchMoney(item.lastPrice, priceCurrency) : '—'}<small>${hasPrice ? esc(priceCurrency) : esc(item.checked || 'Not scanned')}</small></td>
+          <td>${tag(watchPositionLabel(position), positionClass)}</td>
+          <td>${comparable ? `${difference > 0 ? '+' : difference < 0 ? '−' : ''}${watchMoney(Math.abs(difference), item.currency)}<small>${gapPercent > 0 ? '+' : ''}${gapPercent.toFixed(1)}% vs reference</small>` : '<span class="pw-muted">—</span>'}</td>
+          <td title="${esc(history?.error || '')}">${esc(behavior)}${history?.error ? `<small>${esc(history.error.slice(0, 72))}</small>` : ''}</td>
+          <td>${tag(freshness, freshnessClass)}${evidence}${sourceUrl ? `<a class="pw-evidence-link" href="${esc(sourceUrl)}" target="_blank" rel="noopener noreferrer">Open source ↗</a>` : ''}</td>
+          <td><button class="btn small" type="button" data-scan-competitor="${item.id}" ${scanAvailable ? '' : 'disabled title="Website scans require OPENAI_API_KEY on the backend."'}>Scan now</button></td>
         </tr>`;
-    }).join('') || '<tr><td colspan="7" class="empty">No monitored competitors match this filter.</td></tr>';
+    }).join('') || '<tr><td colspan="8" class="empty">No monitored competitors match this filter.</td></tr>';
     const count = $('#competitorCount');
     if (count) count.textContent = `${competitors.length} tracked item${competitors.length === 1 ? '' : 's'}`;
-    body.querySelectorAll('[data-scan-competitor]').forEach(button => {
+
+    const observed = competitors.filter(watchHasPrice);
+    const comparable = observed.filter(item => watchPosition(item) !== 'uncomparable');
+    const belowReference = comparable.filter(item => watchPosition(item) === 'lower');
+    const unscanned = competitors.filter(item => !watchHasPrice(item));
+    $('#pwWatchTracked').textContent = String(competitors.length);
+    $('#pwWatchObserved').textContent = String(observed.length);
+    $('#pwWatchLower').textContent = String(belowReference.length);
+    $('#pwWatchUnscanned').textContent = String(unscanned.length);
+    $('#pwWatchLiveState').textContent = !PW_LIVE
+      ? 'Backend offline'
+      : scanAvailable ? 'Backend connected' : 'Live · scanner unavailable';
+    $('#pwWatchLiveState').className = `tag ${!PW_LIVE ? 'danger' : scanAvailable ? '' : 'warn'}`;
+    const latestScan = competitors
+      .map(item => item.lastCheckedAt ? Date.parse(item.lastCheckedAt) : NaN)
+      .filter(Number.isFinite)
+      .sort((left, right) => right - left)[0];
+    $('#pwWatchUpdatedAt').textContent = providerHealth?.openai_configured === false
+      ? 'Website scans are disabled: configure OPENAI_API_KEY on the backend.'
+      : latestScan
+        ? `Latest saved scan: ${new Date(latestScan).toLocaleString(selectedLocale)}`
+        : 'No completed website scans yet.';
+    const briefTitle = $('#pwWatchBriefTitle');
+    const briefText = $('#pwWatchBriefText');
+    if (!PW_LIVE) {
+      briefTitle.textContent = 'Live competitor data is unavailable';
+      briefText.textContent = 'Sign in and connect to the workspace backend to load monitored websites and saved observations.';
+    } else if (!competitors.length) {
+      briefTitle.textContent = 'Start with one competitor price';
+      briefText.textContent = 'Add a public product or service page and your own reference price. The first scan will create a saved observation.';
+    } else if (!observed.length) {
+      briefTitle.textContent = `${competitors.length} monitor${competitors.length === 1 ? ' is' : 's are'} ready for a first scan`;
+      briefText.textContent = 'No public price has been saved yet. Run a scan on a specific product page to start the market comparison.';
+    } else {
+      briefTitle.textContent = `${observed.length} saved price observation${observed.length === 1 ? '' : 's'} · ${belowReference.length} below your reference`;
+      briefText.textContent = `${comparable.length} observation${comparable.length === 1 ? '' : 's'} can be compared in the same currency. Confirm the page, product match, tax, and delivery before acting; this is not a profit estimate.${providerHealth?.openai_configured === false ? ' New website scans need OPENAI_API_KEY configured on the backend.' : ''}`;
+    }
+
+    const actionCards = $('#pwActionCards');
+    const actionCount = $('#pwActionCount');
+    const actionItems = comparable
+      .filter(item => item.mine > 0)
+      .sort((left, right) => Math.abs(watchGap(right)) - Math.abs(watchGap(left)))
+      .slice(0, 3);
+    actionCount.textContent = `${comparable.length} comparable observation${comparable.length === 1 ? '' : 's'}`;
+    if (actionItems.length) {
+      actionCards.innerHTML = actionItems.map(item => {
+        const gap = watchGap(item) * 100;
+        const label = watchPositionLabel(watchPosition(item));
+        const safeUrl = safePublicUrl(item.url);
+        const freshnessInfo = item.checked || 'Scan time unavailable';
+        return `<article class="pw-action-card">
+          ${tag(label, watchPosition(item) === 'lower' ? 'warn' : '')}
+          <h3>${esc(item.item)} · ${esc(item.competitor)}</h3>
+          <p>Observed ${watchMoney(item.lastPrice, item.lastPriceCurrency || item.currency)} vs your reference ${watchMoney(item.mine, item.currency)} (${gap > 0 ? '+' : ''}${gap.toFixed(1)}%). Verify equivalent product and terms.</p>
+          <small>Saved scan: ${esc(freshnessInfo)}</small>
+          <div class="pw-action-buttons">
+            <button class="btn small" type="button" data-scan-competitor="${item.id}" ${scanAvailable ? '' : 'disabled title="Website scans require OPENAI_API_KEY on the backend."'}>Scan again</button>
+            <button class="btn small" type="button" data-copy-note="${item.id}">Copy review note</button>
+            ${safeUrl ? `<a class="btn small" href="${esc(safeUrl)}" target="_blank" rel="noopener noreferrer">View source</a>` : ''}
+          </div>
+        </article>`;
+      }).join('');
+    } else if (observed.length) {
+      actionCards.innerHTML = '<div class="empty pw-action-empty">Saved prices use a different currency from your reference, so no direct gap or rank is shown.</div>';
+    } else {
+      actionCards.innerHTML = '<div class="empty pw-action-empty">Add a public product page, then scan it to get a real observation and a comparable reference.</div>';
+    }
+
+    document.querySelectorAll('#competitorRows [data-scan-competitor], #pwActionCards [data-scan-competitor]').forEach(button => {
       button.addEventListener('click', async () => {
         const id = button.getAttribute('data-scan-competitor');
         button.disabled = true;
@@ -385,6 +519,37 @@
         }
       });
     });
+    document.querySelectorAll('[data-copy-note]').forEach(button => {
+      button.addEventListener('click', async () => {
+        const item = competitors.find(candidate => String(candidate.id) === button.getAttribute('data-copy-note'));
+        if (!item) return;
+        const note = `Please verify the public listing for ${item.item} at ${item.competitor}: observed ${watchMoney(item.lastPrice, item.lastPriceCurrency || item.currency)} on ${item.checked || 'the latest saved scan'}. Our reference is ${watchMoney(item.mine, item.currency)}. Confirm the exact product, pack size, tax, and delivery before considering a price change.`;
+        try {
+          if (!navigator.clipboard?.writeText) throw new Error('Clipboard access is unavailable in this browser.');
+          await navigator.clipboard.writeText(note);
+          toast('Price review note copied. Verify it before sharing.');
+        } catch (error) {
+          toast(`Could not copy review note: ${error.message}`);
+        }
+      });
+    });
+    const refreshButton = $('#pwRefreshCompetitors');
+    if (refreshButton && !refreshButton.dataset.bound) {
+      refreshButton.dataset.bound = 'true';
+      refreshButton.addEventListener('click', async () => {
+        refreshButton.disabled = true;
+        refreshButton.textContent = 'Refreshing…';
+        try {
+          await pwLoadLiveData();
+          toast('Competitor observations refreshed from the backend.');
+        } catch (error) {
+          toast(`Could not refresh competitor data: ${error.message}`);
+        } finally {
+          refreshButton.disabled = false;
+          refreshButton.textContent = '↻ Refresh data';
+        }
+      });
+    }
   }
 
   renderCompetitors = renderLiveCompetitors;

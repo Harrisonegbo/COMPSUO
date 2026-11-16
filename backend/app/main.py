@@ -13,7 +13,7 @@ from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Request, 
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, HttpUrl, Field
-from sqlalchemy import create_engine, String, Float, DateTime, Text, Integer, ForeignKey, text
+from sqlalchemy import create_engine, String, Float, DateTime, Text, Integer, ForeignKey, text, func
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker, Session
 from dotenv import load_dotenv
@@ -719,6 +719,17 @@ async def refresh_competitor_place(competitor_id: int, db: Session) -> bool:
 def list_competitors(db: Session = Depends(db_session)):
     rows = db.query(Competitor).order_by(Competitor.id.desc()).all()
     places = {row.competitor_id: row for row in db.query(CompetitorPlace).all()}
+    latest_snapshot_ids = (
+        db.query(PriceSnapshot.competitor_id, func.max(PriceSnapshot.id).label("latest_id"))
+        .group_by(PriceSnapshot.competitor_id)
+        .subquery()
+    )
+    latest_snapshots = {
+        row.competitor_id: row
+        for row in db.query(PriceSnapshot)
+        .join(latest_snapshot_ids, PriceSnapshot.id == latest_snapshot_ids.c.latest_id)
+        .all()
+    }
     return [
         {
             "id": row.id,
@@ -728,6 +739,7 @@ def list_competitors(db: Session = Depends(db_session)):
             "target_price": row.target_price,
             "currency": row.currency,
             "last_price": row.last_price,
+            "last_price_currency": latest_snapshots[row.id].currency if row.id in latest_snapshots else row.currency,
             "last_checked_at": row.last_checked_at.isoformat() if row.last_checked_at else None,
             "last_evidence": row.last_evidence,
             "google_place_id": places[row.id].place_id if row.id in places else None,

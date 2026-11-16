@@ -6,6 +6,7 @@ The dashboard loads only saved workspace records and configured provider data; i
 
 - Competitor records, scans, uploaded invoice extraction, and alerts are stored by the FastAPI backend.
 - Google Places can find competitor businesses and return an approximate business price level. Exact product or service prices are scanned from a monitored public website URL; Google Maps does not provide those item-level prices.
+- Competitor Price Watch compares saved website prices only when their currency matches the configured reference price. It shows scan evidence, freshness, and recorded history; it does not estimate profit impact from a price gap.
 - Competitor website prices and saved Google Places details refresh every 15 minutes. Website scans use the configured OpenAI API and Google Places refreshes use Google Maps Platform; monitor provider quotas and charges.
 - QuickBooks Online connects through OAuth 2.0. COMPSUO reads the Profit and Loss report, vendors, items, bills, and purchase orders. It does not write to QuickBooks.
 - QuickBooks access and refresh tokens are encrypted in the database with `TOKEN_ENCRYPTION_KEY`; provider secrets stay on the backend.
