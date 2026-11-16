@@ -17,7 +17,7 @@
 </style>
 <style>.brand-logo{display:block;width:190px;height:auto}</style>
 <link rel="icon" type="image/png" href="frontend/assets/compsuo-logo.png">
-<link rel="stylesheet" href="frontend/compsuo-theme.css">
+<link rel="stylesheet" href="frontend/compsuo-theme.css?v=competitor-watch-1">
 </head>
 <body>
 <div class="app">
@@ -66,9 +66,20 @@
   <div class="card briefing"><h2>✦ Business Intelligence Briefing <span style="color:var(--muted);font-size:11px;font-weight:400;margin-left:8px">Your daily summary · Workspace insights</span></h2><div class="grid briefing-grid"><div class="brief"><span class="alert-icon" style="background:#ffeaeb;color:#d94b52">↑</span><div><b>Supplier costs increased</b><p class="briefing-copy"></p></div></div><div class="brief"><span class="alert-icon">⌕</span><div><b>Competitor changed pricing</b><p class="briefing-copy"></p></div></div><div class="brief"><span class="alert-icon" style="background:#dcf8eb;color:#059b70">✦</span><div><b>Potential savings identified</b><p>Supplier B may offer lower flour costs.</p></div></div><div class="brief"><span class="alert-icon" style="background:#f0eaff;color:#8057ee">✉</span><div><b>Negotiation opportunity</b><p>A supplier price-review email is ready to draft.</p></div></div></div></div>
 </section>
 <section class="page" id="page-competitors">
-  <div class="pagehead"><div><h1>Competitor Price Watch</h1><p>Track competitor prices and make informed pricing decisions.</p></div><div class="head-actions"><button class="btn primary" data-action="addCompetitor">＋ Add competitor</button></div></div>
-  <div class="notice">Prices are scanned from saved competitor websites. Google Maps price levels are business-level estimates, not exact product prices.</div>
-  <div class="card full-card"><div class="card-head"><div><h2>Tracked products & services</h2><p>Compare your price with the latest recorded competitor price.</p></div><span class="tag blue" id="competitorCount">0 tracked items</span></div><div class="filters"><input id="competitorSearch" placeholder="Search product, service, competitor…"><select id="competitorFilter"><option value="all">All price positions</option><option value="lower">Competitor cheaper</option><option value="higher">Competitor more expensive</option><option value="same">Similar price</option></select></div><div class="table-wrap"><table class="table"><thead><tr><th>Product / Service</th><th>Competitor</th><th>Your price</th><th>Their price</th><th>Difference</th><th>Last checked</th><th>Action</th></tr></thead><tbody id="competitorRows"></tbody></table></div></div>
+  <div class="pagehead"><div><h1>Competitor Price Watch</h1><p>Live public-price observations, evidence, and decision support for your monitored products.</p></div><div class="head-actions"><button class="btn" id="pwRefreshCompetitors" type="button">↻ Refresh data</button><button class="btn primary" data-action="addCompetitor">＋ Add competitor</button></div></div>
+  <div class="pw-watch-brief card" aria-live="polite">
+    <div><span class="pw-eyebrow">MARKET BRIEF · LIVE WORKSPACE DATA</span><h2 id="pwWatchBriefTitle">Loading monitored prices…</h2><p id="pwWatchBriefText">Waiting for the saved competitor records and scan results.</p></div>
+    <div class="pw-brief-meta"><span class="tag blue" id="pwWatchLiveState">Connecting</span><small id="pwWatchUpdatedAt">Price comparisons require matching currencies.</small></div>
+  </div>
+  <div class="grid pw-watch-metrics" aria-label="Competitor price summary">
+    <div class="card pw-watch-metric"><small>Monitored URLs</small><strong id="pwWatchTracked">—</strong><span>Saved in this workspace</span></div>
+    <div class="card pw-watch-metric"><small>Prices observed</small><strong id="pwWatchObserved">—</strong><span>Recorded website scans</span></div>
+    <div class="card pw-watch-metric"><small>Below your reference</small><strong id="pwWatchLower">—</strong><span>Comparable currency only</span></div>
+    <div class="card pw-watch-metric"><small>Need a first scan</small><strong id="pwWatchUnscanned">—</strong><span>No saved public price yet</span></div>
+  </div>
+  <div class="notice">A website scan is an AI-extracted observation from the public URL you supplied, not a verified market quote. Check the source, product match, pack size, tax, and delivery before acting. Price gaps are not profit estimates; cost and demand data are not connected here.</div>
+  <div class="card pw-watch-actions"><div class="card-head"><div><h2>Action center</h2><p>Review the largest observed price gaps. Nothing changes your prices automatically.</p></div><span class="tag" id="pwActionCount">0 observations</span></div><div class="pw-action-list" id="pwActionCards"><div class="empty">Loading saved observations…</div></div></div>
+  <div class="card full-card pw-watch-table-card"><div class="card-head"><div><h2>Market decision table</h2><p>Compare your reference with the latest saved public price and its evidence.</p></div><span class="tag blue" id="competitorCount">0 tracked items</span></div><div class="filters"><input id="competitorSearch" placeholder="Search product, service, competitor…" aria-label="Search monitored competitors"><select id="competitorFilter" aria-label="Filter by price position"><option value="all">All price positions</option><option value="lower">Competitor cheaper</option><option value="higher">Competitor more expensive</option><option value="same">Similar price</option><option value="unobserved">Not scanned</option></select></div><div class="table-wrap"><table class="table pw-watch-table"><thead><tr><th>Product / service</th><th>Your reference</th><th>Observed price</th><th>Market position</th><th>Price gap</th><th>Observed behaviour</th><th>Trust & freshness</th><th>Next action</th></tr></thead><tbody id="competitorRows"></tbody></table></div></div>
 </section>
 <section class="page" id="page-invoices">
   <div class="pagehead"><div><h1>Supplier Invoices</h1><p>Upload invoices and track supplier prices over time.</p></div><div class="head-actions"><button class="btn primary" data-action="upload">＋ Upload invoice</button></div></div>
@@ -237,7 +248,7 @@ const pwStatus = (message, live=false) => {
 const pwFmtDate = v => { if(!v) return 'Not scanned'; const d=new Date(v); return Number.isNaN(d.getTime())?String(v):d.toLocaleString(selectedLocale); };
 async function pwLoadLiveData() {
   const [cs, ins, als] = await Promise.all([pwApi('/api/competitors'), pwApi('/api/invoices'), pwApi('/api/alerts')]);
-  competitors = cs.map(c=>({id:c.id,item:c.product_or_service,category:'Monitored website',emoji:'🔎',competitor:c.name,mine:Number(c.target_price||0),theirs:c.last_price==null?Number(c.target_price||0):Number(c.last_price),source:c.url,checked:pwFmtDate(c.last_checked_at),url:c.url,currency:c.currency,lastEvidence:c.last_evidence,lastPrice:c.last_price,liveRecord:true}));
+  competitors = cs.map(c=>({id:c.id,item:c.product_or_service,category:'Monitored website',emoji:'🔎',competitor:c.name,mine:Number(c.target_price||0),theirs:c.last_price==null?Number(c.target_price||0):Number(c.last_price),source:c.url,checked:pwFmtDate(c.last_checked_at),lastCheckedAt:c.last_checked_at,url:c.url,currency:c.currency,lastPriceCurrency:c.last_price_currency||c.currency,lastEvidence:c.last_evidence,lastPrice:c.last_price,liveRecord:true}));
   invoices = ins.map(i=>({id:i.id,supplier:i.supplier,date:i.invoice_date||pwFmtDate(i.created_at),category:(i.line_items||[]).map(x=>x.description).filter(Boolean).slice(0,2).join(', ')||'Extracted invoice',amount:Number(i.total||0),status:'AI extracted — verify',file:i.filename,currency:i.currency,lineItems:i.line_items}));
   savings=[]; suppliers=[]; negotiations=[]; confirmedSavings=0;
   alerts = als.map(a=>({id:a.id,type:String(a.kind||'').includes('supplier')?'supplier':'competitor',title:a.title,detail:a.message,time:pwFmtDate(a.created_at),read:a.status!=='unread',apiKind:a.kind}));
@@ -287,6 +298,6 @@ renderDashboard = function(){pwOldRenderDashboard();if(PW_LIVE){$('#kpiCompetito
 renderAll = function(){pwOldRenderAll();if(PW_LIVE){const productNote=$('#page-products .card-head p');if(productNote)productNote.textContent='Product-level pricing requires monitored URLs; manually entered catalogue items are not live source data.';const notice=$('#page-settings .notice');if(notice)notice.textContent='Backend connected for competitors, invoices, and alerts. Authentication/workspace isolation is not yet implemented; do not expose this deployment to multiple users or sensitive business data.';}localizeDashboard().catch(error=>{$('#localeStatus').textContent+=` Translation unavailable; some text remains in English. ${error.message}`})};
 </script>
 <script src="frontend/region-preferences.js?v=1"></script>
-<script src="frontend/live-mode.js?v=15m-4"></script>
+<script src="frontend/live-mode.js?v=15m-5"></script>
 </body>
 </html>

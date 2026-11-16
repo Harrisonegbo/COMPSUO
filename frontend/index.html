@@ -17,7 +17,7 @@
 .brand-logo{display:block;width:190px;height:auto}
 </style>
 <link rel="icon" type="image/png" href="assets/compsuo-logo.png">
-<link rel="stylesheet" href="compsuo-theme.css?v=nav-1">
+<link rel="stylesheet" href="compsuo-theme.css?v=competitor-watch-1">
 </head>
 <body>
 <div class="app">
@@ -341,6 +341,6 @@ renderDashboard = function(){pwOldRenderDashboard();if(PW_LIVE){$('#kpiCompetito
 renderAll = function(){pwOldRenderAll();if(PW_LIVE){const productNote=$('#page-products .card-head p');if(productNote)productNote.textContent='Product-level pricing requires monitored URLs; manually entered catalogue items are not live source data.';const notice=$('#page-settings .notice');if(notice)notice.textContent='Backend connected for competitors, invoices, and alerts. Authentication/workspace isolation is not yet implemented; do not expose this deployment to multiple users or sensitive business data.';}localizeDashboard().catch(error=>{$('#localeStatus').textContent+=` Translation unavailable; some text remains in English. ${error.message}`})};
 </script>
 <script src="region-preferences.js?v=1"></script>
-<script src="live-mode.js?v=15m-4"></script>
+<script src="live-mode.js?v=15m-5"></script>
 </body>
 </html>
